@@ -1,6 +1,0 @@
-[requires]
-zlib/0.1.0@github/thejohnfreeman
-
-[generators]
-CMakeDeps
-CMakeToolchain

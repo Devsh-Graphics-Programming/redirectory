@@ -1,8 +1,3 @@
-export function success(code: number) {
-  return Math.floor(code / 100) === 2
-}
-
-// https://github.com/Microsoft/TypeScript/wiki/FAQ#why-doesnt-extending-built-ins-like-error-array-and-map-work
 export class Error extends globalThis.Error {
   constructor(
     public code: number,
@@ -16,10 +11,6 @@ export function badRequest(message: string) {
   return new Error(400, message)
 }
 
-export function forbidden(message: string) {
-  return new Error(403, message)
-}
-
 export function notFound(message: string) {
   return new Error(404, message)
 }
@@ -28,6 +19,22 @@ export function badGateway(message: string) {
   return new Error(502, message)
 }
 
-export function conflict(message: string) {
-  return new Error(409, message)
+export async function readText(stream: AsyncIterable<Buffer>) {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of stream) {
+    size += chunk.length
+    if (size > 1048576) throw new Error(413, 'Metadata too large')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+export async function readJson(stream: AsyncIterable<Buffer>) {
+  const text = await readText(stream)
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new Error(400, 'Invalid JSON')
+  }
 }

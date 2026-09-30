@@ -1,11 +1,13 @@
 {
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.js"],
   "compilerOptions": {
+    "strict": true,
+    "allowJs": true,
     "esModuleInterop": true,
     "target": "es2022",
-    "module": "es2022",
-    "moduleResolution": "bundler",
-    "types": ["node", "jest"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
     "outDir": "dist"
   }
 }

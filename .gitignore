@@ -1,4 +1,12 @@
-/package-lock.json
+/tmp/
+/.env
+/.env.*
+!/.env.example
+/.deploy/
+**/.terraform/
+**/*.tfstate*
+**/*.tfplan
+**/crash.log
 /node_modules/
 /github.token
 /oauth.json

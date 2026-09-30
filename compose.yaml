@@ -1,0 +1,27 @@
+services:
+  redirectory:
+    image: ${REDIRECTORY_IMAGE:-redirectory:local}
+    build:
+      context: .
+      target: runtime
+    ports:
+      - '127.0.0.1:${HOST_PORT:-9595}:${PORT:-9595}'
+    environment:
+      PORT: ${PORT:-9595}
+      REDIRECTORY_GITHUB_REPOSITORY: ${REDIRECTORY_GITHUB_REPOSITORY:-}
+      REDIRECTORY_PUBLIC_URL: ${REDIRECTORY_PUBLIC_URL:-}
+      REDIRECTORY_ENCRYPTION_KEY: ${REDIRECTORY_ENCRYPTION_KEY:?Run the configuration helper}
+      REDIRECTORY_GITHUB_READ_TOKEN: ${REDIRECTORY_GITHUB_READ_TOKEN:-}
+      REDIRECTORY_ANONYMOUS_READ: ${REDIRECTORY_ANONYMOUS_READ:-true}
+      REDIRECTORY_MAX_UPLOAD_BYTES: ${REDIRECTORY_MAX_UPLOAD_BYTES:-1073741824}
+      REDIRECTORY_REQUEST_TIMEOUT_SECONDS: ${REDIRECTORY_REQUEST_TIMEOUT_SECONDS:-300}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: [CMD, node, scripts/container.mjs]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s

@@ -24,10 +24,17 @@ exactly one revision with ID `0`.
 
 Redirectory packages are clearly identified by their references.
 Conan package references have the form `${name}/${version}@${user}/${channel}`.
-Redirectory packages always have the user `github`
+By default, Redirectory packages have the user `github`
 and are hosted at the GitHub repository `${name}` owned by `${channel}`.
 For example, the package `cupcake/0.2.0@github/thejohnfreeman`
 is hosted at the GitHub repository [`thejohnfreeman/cupcake`][1].
+
+If you run your own server,
+you can instead keep all packages in one repository
+by setting `REDIRECTORY_GITHUB_REPOSITORY` to its `owner/name`.
+This option requires Conan 2 and accepts references such as `cupcake/0.2.0`.
+Leaving the setting empty preserves the original mapping.
+Changing it does not move existing packages.
 
 In the spirit of [PyPI], [NPM], [crates.io], and [Hackage],
 I run a **free public Redirectory server** at https://conan.jfreeman.dev
@@ -36,8 +43,7 @@ without the gatekeeping of [Conan Center][][^5]
 but free from the responsibility of operating a package server[^4].
 
 [^4]: If you do not trust my server with your PAT,
-I will soon add instructions for how you can run your own Redirectory server
-for free on Google Cloud App Engine, just like I do.
+you can [run your own Redirectory server](#host) with Docker or Scaleway.
 
 [^5]: I love that Conan Center provides a convenient default registry
 of curated recipes for most widely-used packages,
@@ -57,9 +63,8 @@ Downloading requires only read permissions,
 and the server supplies a shared token to serve downloads
 by unauthenticated users.
 GitHub [rate limits][3] tokens to 5000 requests per hour.
-A download of a recipe sends 3 or 4 requests,
-depending on whether your client has revisions enabled,
-and a download of a package sends an additional 1 or 2.
+The number of requests depends on the repository mode
+and whether your client has revisions enabled.
 
 If you find the server cannot serve your downloads
 because the shared token is exhausted,
@@ -98,22 +103,25 @@ Second, you can optionally authenticate to the server using a
 [GitHub Personal Access Token (PAT)][PAT]
 (see [Authentication](#authentication)).
 Redirectory does not store this token[^1].
-It just echoes the token back to your Conan client,
-which stores it in your local Conan cache
+It returns an encrypted session that expires after 30 minutes.
+Your Conan client stores that session in your local Conan cache
 and includes it with every authenticated request it sends to Redirectory.
 
 [^1]: To keep my costs down, the Redirectory server doesn't store _anything_.
 
-Copy the token and authenticate to Redirectory with your GitHub username:
+Authenticate to Redirectory with your GitHub username
+and enter the token at the password prompt:
 
 ```
-conan user --remote redirectory ${owner} --password ${token}
+conan user --remote redirectory ${owner}
 ```
+
+For Conan 2, use `conan remote login redirectory ${owner}` instead.
 
 
 ## Consume
 
-All package references are of the form `${name}/${version}@github/${channel}`
+In the default mode, package references are of the form `${name}/${version}@github/${channel}`
 where `${name}` matches the name of a repository on GitHub,
 `${version}` is a tag in that repository,
 and `${channel}` is the owner of that repository.
@@ -129,9 +137,12 @@ conan search --remote redirectory ${name}
 
 When you publish a package,
 Redirectory will create a tag and a release for you if none exists.
-It will add some metadata in an HTML comment
+In the default mode, it will add some metadata in an HTML comment
 in the description of that release.
 It is important that you never tamper with that comment.
+
+The repository must be public and have at least one commit
+before GitHub can create release tags.
 
 To publish a package,
 first export it to your local Conan cache
@@ -148,8 +159,68 @@ You must wait for GitHub to percolate the asset state
 across its load balancer.
 In my experience, this can take up to 60 seconds.
 
-If you want your package to be [discoverable][4] through `conan search`,
+In the default mode, if you want your package to be [discoverable][4]
+through `conan search`,
 then you'll need to add `redirectory` as a [topic] on your repository.
+
+
+## Host
+
+To run your own server, install Node 24 and Docker Compose.
+Copy [.env.example](.env.example) to `.env`
+and set `REDIRECTORY_GITHUB_READ_TOKEN` to a read-only GitHub token.
+Then generate an encryption key and start the server:
+
+```
+npm run configure
+docker compose up -d --build
+```
+
+Your server is now available at `http://127.0.0.1:9595`.
+You can change the host port with `HOST_PORT`
+and the application port with `PORT`.
+You can also put the container behind your HTTPS reverse proxy.
+Set `REDIRECTORY_PUBLIC_URL` to the external address for Conan 1 upload URLs.
+
+Keep `.env` private and preserve the encryption key across updates.
+The server does not need a database or persistent volume.
+When upgrading from the original server,
+move the shared read token from `oauth.json` to `.env`
+and log in again. Your existing packages work as they are.
+Upload URLs no longer contain plaintext GitHub tokens.
+The default upload limit is 1 GiB per file.
+
+### Scaleway
+
+To use Scaleway instead, install OpenTofu 1.8 or newer.
+Publish a public `linux/amd64` image using the **Validate** workflow
+with an image tag, or your own build pipeline.
+Set `REDIRECTORY_IMAGE` in `.env` to the published image digest,
+and fill in your Scaleway credentials and project ID.
+To create a separate project, leave `SCW_DEFAULT_PROJECT_ID` empty
+and set `REDIRECTORY_CREATE_PROJECT=true`,
+`SCW_DEFAULT_ORGANIZATION_ID` and `REDIRECTORY_PROJECT_NAME`.
+
+```
+npm run deploy
+```
+
+The deployment uses the same container and prints its HTTPS address when ready.
+By default, it uses 140 mCPU and 256 MB,
+and scales from zero to one instances.
+The first request after an idle period may take longer while the server starts.
+
+For your own subdomain, set `REDIRECTORY_DOMAIN`.
+If you use Scaleway DNS, also set `REDIRECTORY_DNS_ZONE`.
+Otherwise, add the CNAME printed by the deployment at your DNS provider
+(with the proxy disabled if you use Cloudflare).
+Scaleway issues and renews the HTTPS certificate.
+
+Back up `.deploy/` too. It tracks the infrastructure for this checkout.
+Use a separate checkout for each deployment.
+To update, change the image digest and run `npm run deploy` again.
+To remove the infrastructure, run `npm run destroy`.
+This leaves your GitHub packages and externally managed DNS records intact.
 
 
 [topic]: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics

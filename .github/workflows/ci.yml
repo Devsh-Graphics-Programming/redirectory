@@ -1,0 +1,60 @@
+name: Validate
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional immutable image tag to publish
+        required: false
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Check formatting
+        run: npm run format:check
+      - name: Test application and deployment helpers
+        run: npm test
+      - name: Test container workflows
+        run: npm run test:containers
+      - name: Validate infrastructure without cloud access
+        run: npm run test:infra
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Build and publish
+        env:
+          IMAGE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$IMAGE_TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]] || exit 1
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$IMAGE_TAG"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo 'That image tag already exists. Pick a new version'
+            exit 1
+          fi
+          docker build --platform linux/amd64 --target runtime --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "$image" .
+          node scripts/test.mjs --smoke "$image"
+          docker push "$image"
+          docker image inspect "$image" --format '{{index .RepoDigests 0}}' >> "$GITHUB_STEP_SUMMARY"
