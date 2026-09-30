@@ -82,7 +82,7 @@ export class GitHub {
     const repository = await (await this.request(this.base)).json()
     if (repository.private)
       throw new HttpError(403, 'Only public package repositories are supported')
-    if (write && (!this.token || repository.permissions?.push === false))
+    if (write && !this.token)
       throw new HttpError(403, 'Repository write permission required')
   }
 

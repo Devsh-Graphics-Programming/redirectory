@@ -39,7 +39,7 @@ export async function mockGitHub(config, repository = 'test/packages') {
     res.json({
       private: false,
       permissions: req.get('Authorization')?.startsWith('Bearer app-')
-        ? undefined
+        ? { push: false }
         : { push: req.get('Authorization') === 'Bearer test-write-token' },
     }),
   )
