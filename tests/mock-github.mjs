@@ -13,14 +13,19 @@ export async function mockGitHub(config, repository = 'test/packages') {
     requests++
     if (
       !req.path.startsWith('/download/') &&
-      !['Bearer test-write-token', 'Bearer test-read-token'].includes(
-        req.get('Authorization'),
-      )
+      ![
+        'Bearer test-write-token',
+        'Bearer test-read-token',
+        'Bearer app-write-token',
+        'Bearer app-read-token',
+      ].includes(req.get('Authorization'))
     )
       return res.sendStatus(401)
     if (
       !['GET', 'HEAD'].includes(req.method) &&
-      req.get('Authorization') !== 'Bearer test-write-token'
+      !['Bearer test-write-token', 'Bearer app-write-token'].includes(
+        req.get('Authorization'),
+      )
     )
       return res.sendStatus(403)
     next()
@@ -33,9 +38,9 @@ export async function mockGitHub(config, repository = 'test/packages') {
   app.get(base, (req, res) =>
     res.json({
       private: false,
-      permissions: {
-        push: req.get('Authorization') === 'Bearer test-write-token',
-      },
+      permissions: req.get('Authorization')?.startsWith('Bearer app-')
+        ? undefined
+        : { push: req.get('Authorization') === 'Bearer test-write-token' },
     }),
   )
   app.get(`${base}/releases`, (req, res) =>

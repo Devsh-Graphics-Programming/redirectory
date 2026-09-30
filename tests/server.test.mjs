@@ -12,6 +12,27 @@ const config = configuration({
 })
 const credentials = { user: 'test', token: 'test-write-token' }
 
+test('installation tokens rely on GitHub to enforce write permissions', async (t) => {
+  const { github, url } = await fixture(t, config)
+  for (const [token, status] of [
+    ['app-read-token', 403],
+    ['app-write-token', 201],
+  ]) {
+    const response = await fetch(
+      url + '/v2/conans/app/1/_/_/revisions/abc/files/conanfile.py',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer ' + issue(config, { user: 'test', token }),
+        },
+        body: 'recipe',
+      },
+    )
+    assert.equal(response.status, status)
+    assert.equal(github.releases.length, status === 201 ? 1 : 0)
+  }
+})
+
 test('asset names preserve metadata paths and reject traversal', () => {
   for (const name of ['conanfile.py', 'metadata/sign/signature'])
     assert.equal(originalName(assetName(name)), name)
