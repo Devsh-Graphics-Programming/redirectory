@@ -57,12 +57,33 @@ def main():
         run('conan', *(['user', 'test', '-r', 'redirectory'] if args.conan1 else ['remote', 'login', 'redirectory', 'test']))
         suffix = uuid.uuid4().hex[:10]
         references = ([f'{args.legacy_repository}/0.1-{name}-{suffix}@github/{args.legacy_owner}' for name in ('alpha', 'beta')] if args.legacy_owner else [f'rd-smoke-{name}-{suffix}/1.0' for name in ('alpha', 'beta')])
+        packages = [(reference, False) for reference in references]
+        if not args.conan1 and not args.legacy_owner:
+            packages.append((f'rd-smoke-empty-{suffix}/1.0', True))
         uploaded = []
         try:
-            for reference in references:
+            for reference, header_only in packages:
                 recipe = base / reference.split('@')[0].replace('/', '-')
                 recipe.mkdir()
-                (recipe / 'conanfile.py').write_text('''from conan import ConanFile
+                if header_only:
+                    (recipe / 'conanfile.py').write_text('''from conan import ConanFile
+from conan.tools.files import copy
+import os
+
+class Smoke(ConanFile):
+    package_type = "header-library"
+    exports_sources = "answer.h"
+    def package_id(self):
+        self.info.clear()
+    def package(self):
+        copy(self, "answer.h", src=self.source_folder, dst=os.path.join(self.package_folder, "include"))
+    def package_info(self):
+        self.cpp_info.set_property("cmake_file_name", "answer")
+        self.cpp_info.set_property("cmake_target_name", "answer::answer")
+''')
+                    (recipe / 'answer.h').write_text('inline int answer() { return 42; }\n')
+                else:
+                    (recipe / 'conanfile.py').write_text('''from conan import ConanFile
 from conan.tools.cmake import CMake, cmake_layout
 
 class Smoke(ConanFile):
@@ -83,9 +104,9 @@ class Smoke(ConanFile):
         self.cpp_info.set_property("cmake_file_name", "answer")
         self.cpp_info.set_property("cmake_target_name", "answer::answer")
 ''')
-                (recipe / 'answer.h').write_text('int answer();\n')
-                (recipe / 'answer.cpp').write_text('int answer() { return 42; }\n')
-                (recipe / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.15)
+                    (recipe / 'answer.h').write_text('int answer();\n')
+                    (recipe / 'answer.cpp').write_text('int answer() { return 42; }\n')
+                    (recipe / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.15)
 project(answer LANGUAGES CXX)
 add_library(answer STATIC answer.cpp)
 install(TARGETS answer ARCHIVE DESTINATION lib)
@@ -102,7 +123,7 @@ install(FILES answer.h DESTINATION include)
             if not args.legacy_owner:
                 run('conan', 'list', f'rd-smoke-*-{suffix}/*#*:*#*', '-r', 'redirectory', retry=True)
             run('conan', *(['user', '--clean'] if args.conan1 else ['remote', 'logout', 'redirectory']))
-            for reference in references:
+            for reference, _header_only in packages:
                 run('conan', 'remove', reference, '-f' if args.conan1 else '--confirm')
                 consumer = base / ('consumer-' + reference.split('@')[0].replace('/', '-'))
                 consumer.mkdir()
@@ -126,7 +147,7 @@ target_link_libraries(consumer PRIVATE answer::answer)
             except urllib.error.HTTPError as error:
                 if error.code != 401:
                     raise
-            print('PASS: two packages, repeated upload, anonymous clean-cache binary install and compiled consumers')
+            print('PASS: packages, repeated upload, anonymous clean-cache binary install and compiled consumers')
         finally:
             run('conan', *(['user', 'test', '-r', 'redirectory'] if args.conan1 else ['remote', 'login', 'redirectory', 'test']))
             failures = []

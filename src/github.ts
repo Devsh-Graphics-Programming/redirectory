@@ -6,11 +6,20 @@ import { Error as HttpError, readText } from './http.js'
 import {
   assetName,
   display,
+  emptyAssetName,
+  emptyOriginalName,
   matches,
   reference,
   tag,
   type Reference,
 } from './model.js'
+
+const emptySha1 = 'da39a3ee5e6b4b0d3255bfef95601890afd80709'
+const emptySha256 =
+  'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+const emptyMarker = Buffer.from('redirectory-empty-file-v1')
+const emptyMarkerDigest =
+  'sha256:' + createHash('sha256').update(emptyMarker).digest('hex')
 
 export interface Asset {
   id: number
@@ -20,6 +29,7 @@ export interface Asset {
   digest?: string
   browser_download_url: string
   created_at: string
+  empty?: boolean
 }
 export interface Release {
   id: number
@@ -35,6 +45,7 @@ export type Fetch = typeof fetch
 
 export class GitHub {
   protected assetName = assetName
+  protected emptyAssetName = emptyAssetName
   protected base: string
   constructor(
     private config: Config,
@@ -184,7 +195,18 @@ export class GitHub {
       )
     )
       throw new HttpError(404, 'Revision upload is incomplete')
-    return assets
+    return assets.map((asset) => {
+      const name = emptyOriginalName(asset.name)
+      return name
+        ? {
+            ...asset,
+            name: this.assetName(name),
+            size: 0,
+            digest: 'sha256:' + emptySha256,
+            empty: true,
+          }
+        : asset
+    })
   }
 
   async file(ref: Reference, name: string): Promise<Asset> {
@@ -201,6 +223,7 @@ export class GitHub {
 
   async content(ref: Reference, name: string): Promise<string> {
     const asset = await this.file(ref, name)
+    if (asset.empty) return ''
     if (asset.size > 1048576) throw new HttpError(413, 'Metadata too large')
     const response = await this.transport(this.downloadUrl(ref, name), {
       signal: AbortSignal.timeout(30000),
@@ -218,9 +241,16 @@ export class GitHub {
 
   protected async prepareUpload(req: Request) {
     const length = req.get('Content-Length')
-    if (!length || !/^\d+$/.test(length))
-      throw new HttpError(411, 'Content-Length required')
-    const size = Number(length)
+    let size: number
+    if (length === undefined) {
+      if (req.get('X-Checksum-Sha1') !== emptySha1)
+        throw new HttpError(411, 'Content-Length required')
+      size = 0
+    } else {
+      if (!/^\d+$/.test(length))
+        throw new HttpError(411, 'Content-Length required')
+      size = Number(length)
+    }
     if (!Number.isSafeInteger(size) || size > this.config.maxUploadBytes)
       throw new HttpError(413, 'Upload too large')
     await this.authorize(true)
@@ -233,9 +263,15 @@ export class GitHub {
     req: Request,
     size: number,
   ) {
-    const existing = (await this.assets(release)).find(
-      (asset) => asset.name === this.assetName(name),
-    )
+    const empty = size === 0
+    const storedName = empty ? this.emptyAssetName(name) : this.assetName(name)
+    const conflictingName = empty
+      ? this.assetName(name)
+      : this.emptyAssetName(name)
+    const assets = await this.assets(release)
+    const existing = assets.find((asset) => asset.name === storedName)
+    const conflicting = assets.find((asset) => asset.name === conflictingName)
+    const storedSize = empty ? emptyMarker.length : size
     const hash = createHash('sha256')
     const md5 = createHash('md5')
     let received = 0
@@ -265,27 +301,31 @@ export class GitHub {
     req.once('error', onAbort)
     req.pipe(body)
     try {
-      if (existing) {
+      if (existing || conflicting || empty) {
         for await (const _chunk of body) {
         }
-        if (
-          existing.size !== size ||
-          existing.digest !== 'sha256:' + hash.digest('hex')
-        )
+      }
+      if (conflicting)
+        throw new HttpError(409, 'Revision already contains a different file')
+      if (existing) {
+        const digest = empty
+          ? emptyMarkerDigest
+          : 'sha256:' + hash.digest('hex')
+        if (existing.size !== storedSize || existing.digest !== digest)
           throw new HttpError(409, 'Revision already contains a different file')
         return { md5: md5.digest('hex') }
       }
       try {
         await (
           await this.request(
-            `${this.base}/releases/${release.id}/assets?name=${this.assetName(name)}`,
+            `${this.base}/releases/${release.id}/assets?name=${storedName}`,
             {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/octet-stream',
-                'Content-Length': String(size),
+                'Content-Length': String(storedSize),
               },
-              body: body as unknown as BodyInit,
+              body: (empty ? emptyMarker : body) as unknown as BodyInit,
               duplex: 'half',
               signal: AbortSignal.any([
                 abort.signal,
@@ -303,12 +343,12 @@ export class GitHub {
         )
           throw error
         const raced = (await this.assets(release)).find(
-          (asset) => asset.name === this.assetName(name),
+          (asset) => asset.name === storedName,
         )
-        if (
-          raced?.size !== size ||
-          raced.digest !== 'sha256:' + hash.digest('hex')
-        )
+        const digest = empty
+          ? emptyMarkerDigest
+          : 'sha256:' + hash.digest('hex')
+        if (raced?.size !== storedSize || raced.digest !== digest)
           throw new HttpError(409, 'Concurrent upload conflict. Try again')
       }
       return { md5: md5.digest('hex') }

@@ -70,11 +70,25 @@ export function assetName(name: string): string {
   return 'f-' + Buffer.from(filename(name)).toString('base64url')
 }
 
+export function emptyAssetName(name: string): string {
+  return 'e-' + Buffer.from(filename(name)).toString('base64url')
+}
+
 export function originalName(name: string): string | undefined {
   if (!name.startsWith('f-')) return undefined
   try {
     const result = filename(Buffer.from(name.slice(2), 'base64url').toString())
     return assetName(result) === name ? result : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function emptyOriginalName(name: string): string | undefined {
+  if (!name.startsWith('e-')) return undefined
+  try {
+    const result = filename(Buffer.from(name.slice(2), 'base64url').toString())
+    return emptyAssetName(result) === name ? result : undefined
   } catch {
     return undefined
   }

@@ -1,8 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { request as httpRequest } from 'node:http'
 import { configuration } from '../dist/config.js'
 import { basic, bearer, issue } from '../dist/auth.js'
-import { tag, filename, assetName, originalName } from '../dist/model.js'
+import {
+  tag,
+  filename,
+  assetName,
+  emptyAssetName,
+  emptyOriginalName,
+  originalName,
+} from '../dist/model.js'
 import { fixture } from './mock-github.mjs'
 
 const config = configuration({
@@ -34,8 +42,10 @@ test('installation tokens rely on GitHub to enforce write permissions', async (t
 })
 
 test('asset names preserve metadata paths and reject traversal', () => {
-  for (const name of ['conanfile.py', 'metadata/sign/signature'])
+  for (const name of ['conanfile.py', 'metadata/sign/signature']) {
     assert.equal(originalName(assetName(name)), name)
+    assert.equal(emptyOriginalName(emptyAssetName(name)), name)
+  }
   for (const name of [
     '../secret',
     '/absolute',
@@ -44,6 +54,81 @@ test('asset names preserve metadata paths and reject traversal', () => {
     'a?auth=secret',
   ])
     assert.throws(() => filename(name))
+})
+
+test('empty Conan files use markers and download as zero bytes', async (t) => {
+  const { github, url } = await fixture(t, config)
+  const headers = {
+    Authorization:
+      'Bearer ' + issue(config, { user: 'test', token: 'test-write-token' }),
+  }
+  const recipe = '/v2/conans/header/1.0/_/_/revisions/recipe'
+  const revision =
+    recipe +
+    '/packages/da39a3ee5e6b4b0d3255bfef95601890afd80709/revisions/package'
+  const put = (name, body, extra = {}) =>
+    fetch(url + revision + '/files/' + name, {
+      method: 'PUT',
+      headers: { ...headers, ...extra },
+      body,
+      duplex: 'half',
+    })
+  const putEmpty = (extra = {}) =>
+    new Promise((resolve, reject) => {
+      const request = httpRequest(
+        url + revision + '/files/conaninfo.txt',
+        {
+          method: 'PUT',
+          headers: {
+            ...headers,
+            'Transfer-Encoding': 'chunked',
+            ...extra,
+          },
+        },
+        (response) => {
+          response.resume()
+          response.once('end', () => resolve(response.statusCode))
+        },
+      )
+      request.once('error', reject)
+      request.end()
+    })
+  assert.equal(await putEmpty(), 411)
+  const checksum = {
+    'X-Checksum-Sha1': 'da39a3ee5e6b4b0d3255bfef95601890afd80709',
+  }
+  assert.equal(await putEmpty(checksum), 201)
+  assert.equal(await putEmpty(checksum), 201)
+  assert.equal((await put('conan_package.tgz', 'archive')).status, 201)
+  assert.equal((await put('conanmanifest.txt', 'manifest')).status, 201)
+  const release = github.releases.find((item) => item.name.includes(':da39a3'))
+  assert.ok(release)
+  assert.ok(
+    release.assets.some(
+      (asset) => asset.name === emptyAssetName('conaninfo.txt'),
+    ),
+  )
+  assert.ok(!release.assets.some((asset) => asset.size === 0))
+  const files = await (await fetch(url + revision + '/files')).json()
+  assert.deepEqual(Object.keys(files.files).sort(), [
+    'conan_package.tgz',
+    'conaninfo.txt',
+    'conanmanifest.txt',
+  ])
+  const download = await fetch(url + revision + '/files/conaninfo.txt', {
+    redirect: 'manual',
+  })
+  assert.equal(download.status, 200)
+  assert.equal(download.headers.get('content-length'), '0')
+  assert.equal((await download.arrayBuffer()).byteLength, 0)
+  const search = await (await fetch(url + recipe + '/search')).json()
+  assert.deepEqual(search, {
+    da39a3ee5e6b4b0d3255bfef95601890afd80709: {
+      settings: {},
+      options: {},
+      requires: [],
+    },
+  })
 })
 
 test('disabled anonymous reads, upload limits and upstream error redaction', async (t) => {

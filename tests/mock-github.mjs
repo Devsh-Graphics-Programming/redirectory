@@ -104,6 +104,7 @@ export async function mockGitHub(config, repository = 'test/packages') {
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
     const data = Buffer.concat(chunks)
+    if (data.length === 0) return res.status(400).send('Bad Content-Length')
     if (release.assets.some((a) => a.name === req.query.name))
       return res.sendStatus(422)
     const asset = {

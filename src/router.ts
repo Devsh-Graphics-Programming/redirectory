@@ -151,7 +151,11 @@ export function createApp(
       const ref = reference(req.params)
       const name = filename(req.params.filename)
       const github = factory(res.locals.token)
-      await github.file(ref, name)
+      const asset = await github.file(ref, name)
+      if (asset.empty) {
+        res.status(200).set('Content-Length', '0').end()
+        return
+      }
       res.redirect(302, github.downloadUrl(ref, name))
     })
     app.put(`${path}/files/*filename`, async (req, res) => {
