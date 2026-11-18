@@ -2,15 +2,24 @@ import { createApp } from '../dist/router.js'
 import express from 'express'
 import { createHash } from 'node:crypto'
 import { GitHub } from '../dist/github.js'
+import { MetadataCache } from '../dist/cache.js'
 
-export async function mockGitHub(config, repository = 'test/packages') {
+export async function mockGitHub(
+  config,
+  repository = 'test/packages',
+  options = {},
+) {
+  const { GitHubClass = GitHub, ...githubOptions } = options
   const app = express()
   const releases = []
   const contents = new Map()
   let id = 0
   let requests = 0
+  const history = []
+  const cache = new MetadataCache()
   app.use((req, res, next) => {
     requests++
+    history.push({ method: req.method, path: req.path })
     if (
       !req.path.startsWith('/download/') &&
       ![
@@ -48,7 +57,7 @@ export async function mockGitHub(config, repository = 'test/packages') {
       [...releases]
         .reverse()
         .slice((Number(req.query.page) - 1) * 100, Number(req.query.page) * 100)
-        .map((release) => ({ ...release, assets: [] })),
+        .map((release) => ({ ...release })),
     ),
   )
   app.get(`${base}/releases/tags/:tag`, (req, res) => {
@@ -136,7 +145,7 @@ export async function mockGitHub(config, repository = 'test/packages') {
   const server = app.listen(0, '127.0.0.1')
   await new Promise((resolve) => server.once('listening', resolve))
   const url = `http://127.0.0.1:${server.address().port}`
-  class LocalGitHub extends GitHub {
+  class LocalGitHub extends GitHubClass {
     downloadUrl(ref, name) {
       const production = new URL(super.downloadUrl(ref, name))
       return (
@@ -148,13 +157,19 @@ export async function mockGitHub(config, repository = 'test/packages') {
     releases,
     contents,
     requests: () => requests,
+    history,
+    cache,
     legacyOptions: {
       api: url,
       uploads: url,
       downloadUrl: (_repo, level, name) =>
         `${url}/download/${encodeURIComponent(level.tag)}/${name}`,
     },
-    factory: (token) => new LocalGitHub(config, token, fetch, url, url),
+    factory: (token) =>
+      new LocalGitHub(config, token, fetch, url, url, {
+        cache,
+        ...githubOptions,
+      }),
     close: () => new Promise((resolve) => server.close(resolve)),
   }
 }

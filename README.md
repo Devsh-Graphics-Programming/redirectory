@@ -62,7 +62,9 @@ interact with the GitHub API.
 Downloading requires only read permissions,
 and the server supplies a shared token to serve downloads
 by unauthenticated users.
-GitHub [rate limits][3] tokens to 5000 requests per hour.
+GitHub [rate limits][3] depend on the token type. Personal access tokens
+normally allow 5000 requests per hour, while GitHub Actions `GITHUB_TOKEN`
+normally allows 1000 per hour per repository.
 The number of requests depends on the repository mode
 and whether your client has revisions enabled.
 

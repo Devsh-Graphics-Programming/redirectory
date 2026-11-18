@@ -2,6 +2,7 @@ import express from 'express'
 import type { Config } from './config.js'
 import { basic, bearer, issue } from './auth.js'
 import { GitHub } from './github.js'
+import { MetadataCache } from './cache.js'
 import { display, filename, originalName, reference } from './model.js'
 import { Error as HttpError } from './http.js'
 import { createLegacyRouter } from './legacy/router.js'
@@ -10,10 +11,13 @@ export type Factory = (token?: string) => GitHub
 
 export function createApp(
   config: Config,
-  factory: Factory = (token) => new GitHub(config, token),
+  factory: Factory | undefined = undefined,
   log: (line: string) => void = console.log,
   legacyOptions = {},
 ) {
+  const cache = new MetadataCache()
+  factory ??= (token) =>
+    new GitHub(config, token, fetch, undefined, undefined, { cache, log })
   const app = express()
   app.disable('x-powered-by')
   app.set('trust proxy', false)
@@ -41,12 +45,12 @@ export function createApp(
   )
   app.get('/v2/users/authenticate', async (req, res) => {
     const credentials = basic(req.get('Authorization'))
-    await factory(credentials.token).authorize()
+    await factory(credentials.token).authorize(false, true)
     res.type('text/plain').send(issue(config, credentials))
   })
   app.get('/v2/users/check_credentials', async (req, res) => {
     const credentials = bearer(config, req.get('Authorization'))
-    await factory(credentials.token).authorize()
+    await factory(credentials.token).authorize(false, true)
     res.type('text/plain').send(credentials.user)
   })
   app.use('/v2', async (req, res, next) => {
@@ -74,7 +78,11 @@ export function createApp(
         '$',
       req.query.ignorecase === 'False' ? '' : 'i',
     )
-    const releases = await factory(res.locals.token).list()
+    const releases = await factory(res.locals.token).list(
+      undefined,
+      false,
+      (ref) => !ref.package && pattern.test(display(ref)),
+    )
     res.json({
       results: [
         ...new Set(
@@ -183,6 +191,8 @@ export function createApp(
       return
     }
     if (status === 401) res.set('WWW-Authenticate', 'Bearer')
+    if (error instanceof HttpError && error.retryAfter !== undefined)
+      res.set('Retry-After', String(error.retryAfter))
     res
       .status(status)
       .type('text/plain')

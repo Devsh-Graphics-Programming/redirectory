@@ -3,6 +3,7 @@ import { Readable, Transform } from 'node:stream'
 import type { Request } from 'express'
 import type { Config } from './config.js'
 import { Error as HttpError, readText } from './http.js'
+import { MetadataCache } from './cache.js'
 import {
   assetName,
   display,
@@ -53,6 +54,10 @@ export class GitHub {
     private transport: Fetch = fetch,
     private api = 'https://api.github.com',
     private uploads = 'https://uploads.github.com',
+    private options: {
+      cache?: MetadataCache
+      log?: (line: string) => void
+    } = {},
   ) {
     this.base = `/repos/${config.repository}`
   }
@@ -61,21 +66,119 @@ export class GitHub {
     path: string,
     init: RequestInit = {},
     origin = this.api,
+    cache = true,
   ): Promise<Response> {
-    const response = await this.transport(origin + path, {
-      ...init,
-      redirect: 'error',
-      signal: init.signal || AbortSignal.timeout(this.config.requestTimeoutMs),
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': 'redirectory',
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-        ...init.headers,
-      },
-    })
+    const method = init.method || 'GET'
+    const read = method === 'GET'
+    const load = async () => {
+      const response = await this.transport(origin + path, {
+        ...init,
+        redirect: 'error',
+        signal:
+          init.signal || AbortSignal.timeout(this.config.requestTimeoutMs),
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'redirectory',
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+          ...init.headers,
+        },
+      })
+      const number = (name: string) => {
+        const value = response.headers.get(name)
+        return value !== null && /^\d{1,12}$/.test(value)
+          ? Number(value)
+          : undefined
+      }
+      const requestId = response.headers.get('x-github-request-id')
+      const resource = response.headers.get('x-ratelimit-resource')
+      const remaining = number('x-ratelimit-remaining')
+      const retry = number('retry-after')
+      const limited =
+        response.status === 429 ||
+        (response.status === 403 && (remaining === 0 || retry !== undefined))
+      this.options.log?.(
+        JSON.stringify({
+          event: 'github_request',
+          operation:
+            origin === this.uploads
+              ? 'upload'
+              : path === this.base
+                ? 'repository'
+                : path.includes('/assets')
+                  ? 'assets'
+                  : path.includes('/releases')
+                    ? 'releases'
+                    : 'tags',
+          method,
+          status: response.status,
+          rate_limited: limited,
+          rate_limit: number('x-ratelimit-limit'),
+          rate_remaining: remaining,
+          rate_used: number('x-ratelimit-used'),
+          rate_reset: number('x-ratelimit-reset'),
+          rate_resource:
+            resource &&
+            [
+              'core',
+              'search',
+              'code_search',
+              'graphql',
+              'integration_manifest',
+            ].includes(resource)
+              ? resource
+              : undefined,
+          retry_after: retry,
+          request_id:
+            requestId && /^[A-Za-z0-9:-]{1,100}$/.test(requestId)
+              ? requestId
+              : undefined,
+        }),
+      )
+      return response
+    }
+    if (!read) this.options.cache?.clear()
+    let response: Response
+    try {
+      response =
+        read && cache && this.options.cache
+          ? await this.options.cache.get(
+              createHash('sha256')
+                .update(this.token || '')
+                .digest('hex') +
+                ':' +
+                origin +
+                path,
+              load,
+            )
+          : await load()
+    } finally {
+      if (!read) this.options.cache?.clear()
+    }
     if (!response.ok) {
       await response.body?.cancel()
+      const remaining = response.headers.get('x-ratelimit-remaining')
+      const retry = response.headers.get('retry-after')
+      const retrySeconds =
+        retry !== null && /^\d{1,12}$/.test(retry) ? Number(retry) : undefined
+      if (
+        response.status === 429 ||
+        (response.status === 403 &&
+          (remaining === '0' || retrySeconds !== undefined))
+      ) {
+        const reset = Number(response.headers.get('x-ratelimit-reset'))
+        const seconds =
+          retrySeconds !== undefined
+            ? retrySeconds
+            : Number.isSafeInteger(reset) && reset > 0
+              ? Math.max(1, reset - Math.floor(Date.now() / 1000))
+              : undefined
+        throw new HttpError(
+          429,
+          'GitHub API rate limit exceeded. Retry later',
+          seconds,
+        )
+      }
       const status = [401, 403, 404, 409, 422, 429].includes(response.status)
         ? response.status
         : 502
@@ -89,8 +192,10 @@ export class GitHub {
     return response
   }
 
-  async authorize(write = false) {
-    const repository = await (await this.request(this.base)).json()
+  async authorize(write = false, fresh = false) {
+    const repository = await (
+      await this.request(this.base, {}, this.api, !write && !fresh)
+    ).json()
     if (repository.private)
       throw new HttpError(403, 'Only public package repositories are supported')
     if (write && !this.token)
@@ -126,12 +231,17 @@ export class GitHub {
     }
   }
 
-  async assets(release: Release): Promise<Asset[]> {
+  async assets(release: Release, fresh = false): Promise<Asset[]> {
+    if (!fresh && Array.isArray(release.assets) && release.assets.length < 100)
+      return release.assets.filter((asset) => asset.state === 'uploaded')
     const result: Asset[] = []
     for (let page = 1; ; page++) {
       const batch: Asset[] = await (
         await this.request(
           `${this.base}/releases/${release.id}/assets?per_page=100&page=${page}`,
+          {},
+          this.api,
+          !fresh,
         )
       ).json()
       result.push(...batch)
@@ -143,6 +253,7 @@ export class GitHub {
   async list(
     prefix?: Reference,
     includeIncomplete = false,
+    accept?: (ref: Reference) => boolean,
   ): Promise<Release[]> {
     const result: Release[] = []
     for (let page = 1; ; page++) {
@@ -159,7 +270,8 @@ export class GitHub {
             metadata.format !== 'redirectory-v1' ||
             !ref.rrev ||
             tag(ref) !== release.tag_name ||
-            (prefix && !matches(ref, prefix))
+            (prefix && !matches(ref, prefix)) ||
+            (accept && !accept(ref))
           )
             continue
         } catch {
@@ -268,7 +380,7 @@ export class GitHub {
     const conflictingName = empty
       ? this.assetName(name)
       : this.emptyAssetName(name)
-    const assets = await this.assets(release)
+    const assets = await this.assets(release, true)
     const existing = assets.find((asset) => asset.name === storedName)
     const conflicting = assets.find((asset) => asset.name === conflictingName)
     const storedSize = empty ? emptyMarker.length : size
@@ -342,7 +454,7 @@ export class GitHub {
           !body.readableEnded
         )
           throw error
-        const raced = (await this.assets(release)).find(
+        const raced = (await this.assets(release, true)).find(
           (asset) => asset.name === storedName,
         )
         const digest = empty
