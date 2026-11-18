@@ -67,6 +67,7 @@ export class GitHub {
     init: RequestInit = {},
     origin = this.api,
     cache = true,
+    affectedTag?: string,
   ): Promise<Response> {
     const method = init.method || 'GET'
     const read = method === 'GET'
@@ -137,7 +138,17 @@ export class GitHub {
       )
       return response
     }
-    if (!read) this.options.cache?.clear()
+    const invalidate = () => {
+      const releases = this.api + this.base + '/releases'
+      const id = path.match(/\/releases\/(\d+)(?:\/|$)/)?.[1]
+      this.options.cache?.invalidate(
+        (key) =>
+          key.includes(releases + '?') ||
+          key.endsWith(releases + '/tags/' + affectedTag) ||
+          (id !== undefined && key.includes(releases + '/' + id + '/assets?')),
+      )
+    }
+    if (!read) invalidate()
     let response: Response
     try {
       response =
@@ -153,7 +164,7 @@ export class GitHub {
             )
           : await load()
     } finally {
-      if (!read) this.options.cache?.clear()
+      if (!read) invalidate()
     }
     if (!response.ok) {
       await response.body?.cancel()
@@ -194,7 +205,7 @@ export class GitHub {
 
   async authorize(write = false, fresh = false) {
     const repository = await (
-      await this.request(this.base, {}, this.api, !write && !fresh)
+      await this.request(this.base, {}, this.api, !fresh)
     ).json()
     if (repository.private)
       throw new HttpError(403, 'Only public package repositories are supported')
@@ -214,16 +225,25 @@ export class GitHub {
     }
     try {
       return await (
-        await this.request(`${this.base}/releases`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tag_name: releaseTag,
-            name: `${display(ref)}#${ref.rrev}${ref.package ? ':' + ref.package + '#' + ref.prev : ''}`,
-            body: JSON.stringify({ format: 'redirectory-v1', reference: ref }),
-            make_latest: 'false',
-          }),
-        })
+        await this.request(
+          `${this.base}/releases`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              tag_name: releaseTag,
+              name: `${display(ref)}#${ref.rrev}${ref.package ? ':' + ref.package + '#' + ref.prev : ''}`,
+              body: JSON.stringify({
+                format: 'redirectory-v1',
+                reference: ref,
+              }),
+              make_latest: 'false',
+            }),
+          },
+          this.api,
+          true,
+          releaseTag,
+        )
       ).json()
     } catch (error) {
       if (!(error instanceof HttpError) || error.code !== 422) throw error
@@ -380,7 +400,7 @@ export class GitHub {
     const conflictingName = empty
       ? this.assetName(name)
       : this.emptyAssetName(name)
-    const assets = await this.assets(release, true)
+    const assets = await this.assets(release)
     const existing = assets.find((asset) => asset.name === storedName)
     const conflicting = assets.find((asset) => asset.name === conflictingName)
     const storedSize = empty ? emptyMarker.length : size
@@ -445,6 +465,8 @@ export class GitHub {
               ]),
             } as RequestInit,
             this.uploads,
+            true,
+            release.tag_name,
           )
         ).body?.cancel()
       } catch (error) {
@@ -480,15 +502,27 @@ export class GitHub {
     if (!releases.length) throw new HttpError(404, 'Package not found')
     for (const release of releases) {
       try {
-        await this.request(`${this.base}/git/refs/tags/${release.tag_name}`, {
-          method: 'DELETE',
-        })
+        await this.request(
+          `${this.base}/git/refs/tags/${release.tag_name}`,
+          {
+            method: 'DELETE',
+          },
+          this.api,
+          true,
+          release.tag_name,
+        )
       } catch (error) {
         if (!(error instanceof HttpError) || error.code !== 404) throw error
       }
-      await this.request(`${this.base}/releases/${release.id}`, {
-        method: 'DELETE',
-      })
+      await this.request(
+        `${this.base}/releases/${release.id}`,
+        {
+          method: 'DELETE',
+        },
+        this.api,
+        true,
+        release.tag_name,
+      )
     }
   }
 }

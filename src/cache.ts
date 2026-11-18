@@ -24,6 +24,16 @@ export class MetadataCache {
     this.bytes = 0
   }
 
+  invalidate(matches: (key: string) => boolean) {
+    for (const [key, entry] of this.entries) {
+      if (!matches(key)) continue
+      this.bytes -= entry.value.body.byteLength
+      this.entries.delete(key)
+    }
+    for (const key of this.pending.keys())
+      if (matches(key)) this.pending.delete(key)
+  }
+
   async get(key: string, load: () => Promise<Response>): Promise<Response> {
     const cached = this.entries.get(key)
     if (cached && cached.expires > this.now())
@@ -45,6 +55,7 @@ export class MetadataCache {
         }
         if (
           generation === this.generation &&
+          this.pending.get(key) === pending &&
           (response.ok || response.status === 404) &&
           value.body.byteLength <= this.maxBytes
         ) {

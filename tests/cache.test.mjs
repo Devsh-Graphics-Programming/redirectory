@@ -299,3 +299,66 @@ test('concurrent searches over 137 releases share three GitHub calls without ass
   )
   assert.equal(github.requests(), 3)
 })
+
+test('selective invalidation preserves unrelated cached and in-flight reads', async () => {
+  const cache = new MetadataCache()
+  let finishA,
+    finishB,
+    calls = 0
+  const a = cache.get('a', () => new Promise((resolve) => (finishA = resolve)))
+  const b = cache.get('b', () => new Promise((resolve) => (finishB = resolve)))
+  cache.invalidate((key) => key === 'a')
+  finishA(new Response('old'))
+  finishB(new Response('retained'))
+  await Promise.all([a, b])
+  const load = async () => {
+    calls++
+    return new Response('new')
+  }
+  assert.equal(await (await cache.get('b', load)).text(), 'retained')
+  assert.equal(await (await cache.get('a', load)).text(), 'new')
+  assert.equal(calls, 1)
+})
+
+test('uploading one revision preserves cached files of another revision', async (t) => {
+  const { github, url } = await fixture(t, config)
+  const ref = {
+    name: 'other',
+    version: '1.0',
+    user: '_',
+    channel: '_',
+    rrev: 'recipe',
+  }
+  github.releases.push({
+    id: 10000,
+    tag_name: tag(ref),
+    created_at: '2026-01-01T00:00:00Z',
+    body: JSON.stringify({ format: 'redirectory-v1', reference: ref }),
+    assets: [
+      {
+        id: 20000,
+        name: assetName('conanmanifest.txt'),
+        state: 'uploaded',
+        size: 1,
+      },
+    ],
+  })
+  const path = url + '/v2/conans/other/1.0/_/_/revisions/recipe/files'
+  assert.equal((await fetch(path)).status, 200)
+  const headers = {
+    Authorization:
+      'Bearer ' + issue(config, { user: 'test', token: 'test-write-token' }),
+  }
+  assert.equal(
+    (
+      await fetch(
+        url + '/v2/conans/new/1.0/_/_/revisions/recipe/files/conanfile.py',
+        { method: 'PUT', headers, body: 'recipe' },
+      )
+    ).status,
+    201,
+  )
+  const before = github.requests()
+  assert.equal((await fetch(path)).status, 200)
+  assert.equal(github.requests(), before)
+})
